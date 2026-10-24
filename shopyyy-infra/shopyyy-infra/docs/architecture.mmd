@@ -1,0 +1,35 @@
+flowchart TB
+    user([Browser])
+    r53[Route 53<br/>shopyyy.com]
+    acm[ACM certificates<br/>shopyyy.com + *.shopyyy.com<br/>us-east-1 for CloudFront, regional for ALB]
+    cf[CloudFront CDN<br/>HTTPS, redirect HTTP to HTTPS]
+    s3[(S3 bucket<br/>React static files<br/>public access blocked, OAC only)]
+
+    user -->|1. DNS lookup| r53
+    r53 -->|alias A/AAAA| cf
+    acm -.->|TLS cert| cf
+    cf -->|"2a. default behavior: /*"| s3
+    cf -->|"2b. /api/* + X-Origin-Verify header"| alb
+
+    subgraph vpc["VPC 10.0.0.0/16 (2 Availability Zones)"]
+        subgraph pub["Public subnets (AZ-a, AZ-b)"]
+            alb[Application Load Balancer<br/>HTTPS 443, health check /api/health]
+            nat[NAT Gateway]
+        end
+        subgraph priv["Private subnets (AZ-a, AZ-b)"]
+            ecs[ECS Fargate API tasks x2<br/>port 3000, one per AZ]
+            worker[Order worker<br/>Kafka consumer]
+            redis[(ElastiCache Redis<br/>cache.t3.micro, 6379)]
+            msk[[Amazon MSK Kafka<br/>2 brokers, 9092]]
+            rds[(RDS PostgreSQL 17<br/>Multi-AZ, 5432)]
+        end
+    end
+
+    alb -->|"3. 3000 (SG: ALB to ECS)"| ecs
+    ecs -->|"4a. cache lookup 6379"| redis
+    ecs -->|"4b. cache miss: query 5432"| rds
+    ecs -->|"5. publish order 9092"| msk
+    msk -->|"6. consume 9092"| worker
+    worker -->|"7. save order 5432"| rds
+    ecs -.->|outbound 443| nat
+    secrets[Secrets Manager<br/>DB credentials] -.->|injected at task start| ecs

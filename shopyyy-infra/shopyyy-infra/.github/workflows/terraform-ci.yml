@@ -1,0 +1,42 @@
+name: terraform-ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  validate-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.10"
+
+      - name: Format check
+        run: terraform fmt -check -recursive
+
+      - name: Unit tests (mock provider, no AWS account needed)
+        run: |
+          for dir in modules/*/; do
+            echo "::group::terraform test $dir"
+            (cd "$dir" && terraform init -backend=false -input=false && terraform test)
+            echo "::endgroup::"
+          done
+
+      - name: Validate environment
+        working-directory: envs/dev
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+
+      - name: Lint (tflint)
+        uses: terraform-linters/setup-tflint@v4
+      - run: tflint --recursive
+
+      - name: Security scan (checkov)
+        run: |
+          pip install checkov
+          checkov -d . --framework terraform --quiet --soft-fail
